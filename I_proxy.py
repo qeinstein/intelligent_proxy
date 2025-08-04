@@ -1,3 +1,5 @@
+
+
 import http.server
 import socketserver
 import requests
@@ -22,7 +24,7 @@ PORT = 8070
 LOCAL_BLOCKED_SITES = [ # Renamed to distinguish from dynamic
     "example.com",
     "ads.google.com",
-    "badwebsite.io"
+    "badwebsite.io",
 ]
 
 DYNAMIC_BLOCKED_SITES = set() # New list for dynamically fetched malicious sites
@@ -33,7 +35,7 @@ AUTHORIZED_USERS = {
     "admin": "password123", # replace with secure values later
 }
 
-# --- Function to fetch dynamic blocked sites (moved outside class for clarity) ---
+# fetch dynamic blocked sites
 @retry(requests.exceptions.RequestException, tries=3, delay=10)
 def fetch_blocked_sites_list():
     """Fetches the blocked sites list with retries."""
@@ -82,7 +84,7 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
     # New list of keywords to filter
     MALICIOUS_KEYWORDS = ['malware', 'phishing', 'virus', 'trojan']
 
-    # Moved anonymize_headers to be a static method of the class
+    # should also be a static method of the class
     @staticmethod
     def anonymize_headers(headers):
         sensitive = ['User-Agent', 'Referer', 'Cookie', 'X-Forwarded-For']
@@ -93,7 +95,6 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
         new_headers["User-Agent"] = "I-ProxyBot/1.0"
         return new_headers
 
-    # ... (rest of your existing static methods like get_expiration, get_cache_filename, save_to_cache, load_from_cache) ...
 
     @staticmethod
     def get_expiration(headers):
@@ -120,7 +121,6 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 pass
 
-        # --- Smarter Heuristic Caching Fallback ---
         content_type = headers.get("Content-Type", "").lower()
         
         # Cache images for longer
@@ -128,7 +128,7 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
             print("Applying heuristic: caching image for 12 hours.")
             return datetime.utcnow() + timedelta(hours=12)
         
-        # Cache other static assets for a medium amount of time
+        # Cache other static assets for a small amount of time
         if "javascript" in content_type or "css" in content_type:
             print("Applying heuristic: caching script/stylesheet for 1 hour.")
             return datetime.utcnow() + timedelta(hours=1)
@@ -203,6 +203,38 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
         #     self.end_headers()
         #     return
 
+        full_url = self.path
+        if not self.path.startswith("https"):
+            host = self.headers.get("Host")
+            full_url = f"https://{host}{self.path}"
+
+        parsed_url = urlparse(full_url)
+        hostname = parsed_url.hostname
+
+                # loop check for inifinte stuff
+        requested_host_header = self.headers.get("Host")
+        # Ensure PORT is correctly used and matches the global PORT
+        proxy_address = f"localhost:{PORT}"
+        proxy_address_ip = f"127.0.0.1:{PORT}"
+
+        
+        
+        # Check if the Host header points to the proxy itself
+        if requested_host_header == proxy_address or requested_host_header == proxy_address_ip:
+            print(f"DEBUG: Loop detected via Host header: {requested_host_header}")
+            self.send_response(403)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<h1>Loop detected: request to proxy itself is blocked</h1>")
+            return
+
+        if hostname in LOCAL_BLOCKED_SITES or hostname in DYNAMIC_BLOCKED_SITES:
+            self.send_response(403)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<h1>This site is blocked by I-Proxy</h1>")
+            return
+
         client_ip = self.client_address[0]
         if self.is_rate_limited(client_ip):
             self.send_error(429, "Too Many Requests")
@@ -231,7 +263,7 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
         ]
 
     def do_GET(self):
-        # 1. Authentication Check
+        # 1. Authentication Check (currently commented out)
         # if not self.is_authorized():
         #     self.send_response(401)
         #     self.send_header("WWW-Authenticate", 'Basic realm="I-Proxy Access"')
@@ -264,43 +296,111 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
         for key, value in self.headers.items():
             print(f" {key}: {value}")
 
-        # 3. Handle Admin Dashboard Access (Highest Priority for internal paths)
+        # dashboard for like the urls and all(remember to add this)
         if self.path.startswith("/admin"):
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
 
-            dashboard = "<html><body><h1>I-Proxy Dashboard</h1>"
-            dashboard += f"<p>Active IPs: {len(self.REQUEST_LOG)}</p>"
-            dashboard += "<h2>Traffic Summary</h2>"
-            dashboard += f"<p>Total requests in last 60s: {len(self.DETAILED_REQUEST_LOG)}</p>"
+            active_ips_count = len(self.REQUEST_LOG)
+            total_requests_count = len(self.DETAILED_REQUEST_LOG)
             
             url_counts = Counter(entry['url'] for entry in self.DETAILED_REQUEST_LOG)
-            dashboard += "<h2>Top 5 Visited Sites (last 60s)</h2>"
+            
+            top_sites_list = ""
+            # Start of improved dashboard HTML
+            dashboard = """
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>I-Proxy Dashboard</title>
+                <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+                <script src="https://cdn.tailwindcss.com"></script>
+                <style>
+                    body {{
+                        font-family: 'Inter', sans-serif;
+                    }}
+                </style>
+            </head>
+            <body class="bg-gray-100 p-4 sm:p-8">
+                <div class="max-w-4xl mx-auto bg-white shadow-lg rounded-xl p-6 sm:p-8">
+                    <h1 class="text-3xl sm:text-4xl font-bold text-center text-gray-800 mb-6">I-Proxy Dashboard 🚀</h1>
+                    
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                        <div class="bg-blue-50 p-5 rounded-lg shadow-sm">
+                            <h2 class="text-xl font-semibold text-blue-700 mb-2">Active Users</h2>
+                            <p class="text-3xl font-bold text-blue-900">{active_ips_count}</p>
+                            <p class="text-sm text-gray-600">Unique IPs in last 60 seconds</p>
+                        </div>
+                        <div class="bg-green-50 p-5 rounded-lg shadow-sm">
+                            <h2 class="text-xl font-semibold text-green-700 mb-2">Total Requests</h2>
+                            <p class="text-3xl font-bold text-green-900">{total_requests_count}</p>
+                            <p class="text-sm text-gray-600">Requests in last 60 seconds</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-purple-50 p-6 rounded-lg shadow-sm">
+                        <h2 class="text-xl font-semibold text-purple-700 mb-4">Top 5 Visited Sites (Last 60s)</h2>
+                        <ul class="space-y-3">
+                            {top_sites_list}
+                        </ul>
+                        {no_requests_message}
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+            
             if url_counts:
                 for url, count in url_counts.most_common(5):
-                    dashboard += f"<p>{url}: {count} visits</p>"
+                    top_sites_list += f"""
+                    <li class="flex items-center justify-between p-3 bg-white rounded-md shadow-xs">
+                        <span class="text-gray-800 text-sm md:text-base truncate">{url}</span>
+                        <span class="ml-4 px-3 py-1 bg-purple-200 text-purple-800 text-sm font-semibold rounded-full">{count} visits</span>
+                    </li>
+                    """
+                no_requests_message = ""
             else:
-                dashboard += "<p>No requests yet.</p>"
+                no_requests_message = "<p class='text-center text-gray-600 mt-4'>No requests yet. Start browsing!</p>"
+                top_sites_list = "" # Ensure list is empty if no requests
 
-            dashboard += "</body></html>"
+            # Format the dashboard string with dynamic content
+            dashboard = dashboard.format(
+                active_ips_count=active_ips_count,
+                total_requests_count=total_requests_count,
+                top_sites_list=top_sites_list,
+                no_requests_message=no_requests_message
+            )
+
             self.wfile.write(dashboard.encode())
-            return # IMPORTANT: Return here to prevent further processing for admin requests
+            return
 
-        # Parse URL for hostname after admin check
-        parsed_url = urlparse(full_url)
-        hostname = parsed_url.hostname
+        # loop check for inifinte stuff
+        requested_host_header = self.headers.get("Host")
+        # Ensure PORT is correctly used and matches the global PORT
+        proxy_address = f"localhost:{PORT}"
+        proxy_address_ip = f"127.0.0.1:{PORT}"
 
-        # 4. Prevent Forwarding to Self (Loopback Check) - Must be before general blocking
-        if parsed_url.hostname in ["localhost", "127.0.0.1"] and parsed_url.port == PORT:
+        
+        
+        # Check if the Host header points to the proxy itself
+        if requested_host_header == proxy_address or requested_host_header == proxy_address_ip:
+            print(f"DEBUG: Loop detected via Host header: {requested_host_header}")
             self.send_response(403)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
             self.wfile.write(b"<h1>Loop detected: request to proxy itself is blocked</h1>")
             return
+        #
 
-        # 5. Check for General Blocked Sites (Static and Dynamic)
-        # This check should ONLY apply to external hosts, not internal ones like localhost
+        # Parse URL for hostname for other checks (after the Host header loopback check)
+        parsed_url = urlparse(full_url)
+        hostname = parsed_url.hostname
+
+        # Check for General Blocked Sites (Static and Dynamic)
+        
         if hostname in LOCAL_BLOCKED_SITES or hostname in DYNAMIC_BLOCKED_SITES:
             self.send_response(403)
             self.send_header("Content-Type", "text/html")
@@ -308,7 +408,7 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"<h1>This site is blocked by I-Proxy</h1>")
             return
 
-        # 6. Disk Cache Check
+        # Disk Cache Check
         cached_response = self.load_from_cache(full_url)
         if cached_response:
             print(f"Serving {full_url} from disk cache")
@@ -318,10 +418,13 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(cached_response)
             return
 
-        # 7. Forward the Request and Apply Content Filtering
+        # Apply Content Filtering
         try:
-            # Use the static method for anonymizing headers
+            # Use the static method for anonymizing heade-rs
             headers = self.anonymize_headers(self.headers) 
+            
+            # Print the full_url that requests.get is about to use for debugging
+            print(f"DEBUG: Attempting to fetch URL: {full_url}")
 
             response = requests.get(full_url, headers=headers, timeout=5)
             
@@ -360,9 +463,10 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
         except requests.exceptions.RequestException as e:
             self.send_error(502, f"Upstream error: {e}")
 
-    def is_loopback_request(self):
+    def is_loopback_request(self): # This function is now redundant for do_GET but kept for do_POST
         parsed_url = urlparse(self.path)
         return parsed_url.hostname in ["localhost", "127.0.0.1"] and parsed_url.port == PORT
+
 
     def filter_headers(self, headers):
         return {k: v for k, v in headers.items() if k.lower() not in ["host", "content-length"]}
@@ -374,11 +478,7 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
             self.send_error(403, "Forbidden")
             return
 
-        # Note: Rate limiting for POST should be self.is_rate_limited(client_ip)
-        # The current code has 'if not self.is_rate_limited(client_ip): self.send_error(429, "Too Many Requests") return'
-        # This means it sends an error if NOT rate limited, which is backwards.
-        # It should be: if self.is_rate_limited(client_ip): ...
-        if self.is_rate_limited(client_ip): # Corrected logic
+        if self.is_rate_limited(client_ip): 
             self.send_error(429, "Too Many Requests")
             return
 
@@ -414,7 +514,6 @@ class Proxyhandler(http.server.BaseHTTPRequestHandler):
 
 
 with socketserver.ThreadingTCPServer(("", PORT), Proxyhandler) as httpd:
-    httpd.daemon_threads = True # Set daemon_threads after creation
     print(f"Proxy Server running on port {PORT}")
     try:
         httpd.serve_forever()
